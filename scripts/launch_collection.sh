@@ -52,7 +52,7 @@ check_process() {
 
 # Launch shard 0 (GPUs 0-1)
 echo "Starting Shard 0 (GPUs 0-1)..."
-CUDA_VISIBLE_DEVICES=0,1 python scripts/collect_activations.py \
+CUDA_VISIBLE_DEVICES=0,1 python core/collect_activations.py \
     --shard_id 0 \
     --num_shards 4 \
     --output_dir data/shard0 \
@@ -68,7 +68,7 @@ sleep 5
 
 # Launch shard 1 (GPUs 2-3)
 echo "Starting Shard 1 (GPUs 2-3)..."
-CUDA_VISIBLE_DEVICES=2,3 python scripts/collect_activations.py \
+CUDA_VISIBLE_DEVICES=2,3 python core/collect_activations.py \
     --shard_id 1 \
     --num_shards 4 \
     --output_dir data/shard1 \
@@ -83,7 +83,7 @@ sleep 5
 
 # Launch shard 2 (GPUs 4-5)
 echo "Starting Shard 2 (GPUs 4-5)..."
-CUDA_VISIBLE_DEVICES=4,5 python scripts/collect_activations.py \
+CUDA_VISIBLE_DEVICES=4,5 python core/collect_activations.py \
     --shard_id 2 \
     --num_shards 4 \
     --output_dir data/shard2 \
@@ -98,7 +98,7 @@ sleep 5
 
 # Launch shard 3 (GPUs 6-7)
 echo "Starting Shard 3 (GPUs 6-7)..."
-CUDA_VISIBLE_DEVICES=6,7 python scripts/collect_activations.py \
+CUDA_VISIBLE_DEVICES=6,7 python core/collect_activations.py \
     --shard_id 3 \
     --num_shards 4 \
     --output_dir data/shard3 \
@@ -144,7 +144,7 @@ echo ""
 
 # Verify all shards
 echo "Verifying collected data..."
-python scripts/verify_collection.py \
+python core/verify_collection.py \
     --data_dir data/shard0 \
     --data_dir data/shard1 \
     --data_dir data/shard2 \

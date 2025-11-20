@@ -1,91 +1,77 @@
 #!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 echo "========================================="
 echo "Kimi-K2 SAE Project Setup"
 echo "========================================="
 echo ""
 
-# Check Python version
 echo "Checking Python version..."
 PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
-PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+PYTHON_MAJOR=$(echo "${PYTHON_VERSION}" | cut -d. -f1)
+PYTHON_MINOR=$(echo "${PYTHON_VERSION}" | cut -d. -f2)
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || [ "$PYTHON_MAJOR" -eq 3 -a "$PYTHON_MINOR" -lt 9 ]; then
-    echo "✗ Python 3.9+ required (found $PYTHON_VERSION)"
+if [ "${PYTHON_MAJOR}" -lt 3 ] || { [ "${PYTHON_MAJOR}" -eq 3 ] && [ "${PYTHON_MINOR}" -lt 9 ]; }; then
+    echo "[error] Python 3.9+ required (found ${PYTHON_VERSION})"
     exit 1
 fi
-echo "✓ Python $PYTHON_VERSION"
+echo "[ok] Python ${PYTHON_VERSION}"
 
-# Check CUDA
 echo ""
-echo "Checking CUDA..."
-if command -v nvidia-smi &> /dev/null; then
-    CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}')
-    echo "✓ CUDA $CUDA_VERSION"
+echo "Checking CUDA availability..."
+if command -v nvidia-smi &>/dev/null; then
+    CUDA_VERSION=$(nvidia-smi | awk '/CUDA Version/ {print $9; exit}')
+    echo "[ok] CUDA ${CUDA_VERSION}"
     echo ""
     nvidia-smi --query-gpu=index,name,memory.total --format=csv
 else
-    echo "✗ nvidia-smi not found - GPU required"
+    echo "[error] nvidia-smi not found. GPUs are required."
     exit 1
 fi
 
-# Check disk space
 echo ""
 echo "Checking disk space..."
-AVAILABLE=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
+AVAILABLE=$(df -BG "${REPO_ROOT}" | tail -1 | awk '{print $4}' | sed 's/G//')
 echo "Available: ${AVAILABLE} GB"
-if [ "$AVAILABLE" -lt 15000 ]; then
-    echo "⚠ Warning: Less than 15 TB available"
-    echo "  Full collection requires ~15 TB"
+if [ "${AVAILABLE}" -lt 15000 ]; then
+    echo "[warn] Less than 15 TB available. Full collection requires ~15 TB."
 fi
 
-# Install dependencies
 echo ""
 echo "Installing Python dependencies..."
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
+echo "[ok] Dependencies installed"
 
-if [ $? -ne 0 ]; then
-    echo "✗ Failed to install dependencies"
-    exit 1
-fi
-echo "✓ Dependencies installed"
-
-# Create directories
 echo ""
-echo "Creating directories..."
+echo "Creating project directories..."
 mkdir -p data/{shard0,shard1,shard2,shard3}/{activations,token_ids}
 mkdir -p logs
 mkdir -p models
-echo "✓ Directories created"
+echo "[ok] Directory layout ready"
 
-# Make scripts executable
 echo ""
-echo "Making scripts executable..."
-chmod +x launch_pilot.sh
-chmod +x launch_collection.sh
-chmod +x monitor.sh
-echo "✓ Scripts are executable"
+echo "Ensuring shell scripts are executable..."
+chmod +x scripts/launch_pilot.sh
+chmod +x scripts/launch_collection.sh
+chmod +x scripts/monitor.sh
+echo "[ok] Shell scripts marked executable"
 
-# Test imports
 echo ""
-echo "Testing imports..."
-python3 -c "import torch; import transformers; import datasets; print('✓ All imports successful')"
-
-if [ $? -ne 0 ]; then
-    echo "✗ Import test failed"
-    exit 1
-fi
+echo "Testing core Python imports..."
+python3 -c "import torch, transformers, datasets; print('[ok] Core imports succeeded')"
 
 echo ""
 echo "========================================="
-echo "✓ Setup Complete!"
+echo "[ok] Setup Complete!"
 echo "========================================="
-echo ""
 echo "Next steps:"
 echo "  1. Run pilot: bash launch_pilot.sh"
 echo "  2. If successful, run full collection: bash launch_collection.sh"
 echo "  3. Monitor progress: bash monitor.sh"
 echo ""
-echo "For detailed usage, see USAGE.md"
+echo "For detailed usage, see docs/USAGE.md"
 echo "========================================="

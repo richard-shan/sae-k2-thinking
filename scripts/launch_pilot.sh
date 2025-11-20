@@ -15,7 +15,7 @@ echo "This will take approximately 5-10 minutes."
 echo ""
 
 # Launch single-stream pilot on GPUs 0-1
-CUDA_VISIBLE_DEVICES=0,1 python scripts/collect_activations.py \
+CUDA_VISIBLE_DEVICES=0,1 python core/collect_activations.py \
     --shard_id 0 \
     --num_shards 1 \
     --output_dir data/pilot \
@@ -32,7 +32,7 @@ echo ""
 
 # Verify the pilot data
 echo "Verifying pilot data..."
-python scripts/verify_collection.py --data_dir data/pilot
+python core/verify_collection.py --data_dir data/pilot
 
 echo ""
 echo "========================================="

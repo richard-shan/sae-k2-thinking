@@ -126,6 +126,10 @@ def main():
     activations_cache = []
     token_ids_cache = []
     
+    # Get model's hidden dimension
+    d_model = model.config.hidden_size
+    print(f"Shard {args.shard_id}: Model hidden size (d_model): {d_model}")
+    
     def hook_fn(module, input, output):
         """Hook function to capture layer outputs during forward pass."""
         # Extract activations and move to CPU immediately
@@ -222,7 +226,8 @@ def main():
                         activations_cache,
                         token_ids_cache,
                         chunk_id,
-                        args.output_dir
+                        args.output_dir,
+                        d_model
                     )
                     
                     # Save checkpoint
@@ -262,7 +267,8 @@ def main():
                 activations_cache,
                 token_ids_cache,
                 chunk_id,
-                args.output_dir
+                args.output_dir,
+                d_model
             )
             print(f"Shard {args.shard_id}: ✓ Saved final chunk {chunk_id}")
         
@@ -288,14 +294,14 @@ def main():
         print(f"  Errors: {errors}")
 
 
-def save_chunk(activations_cache, token_ids_cache, chunk_id, output_dir):
+def save_chunk(activations_cache, token_ids_cache, chunk_id, output_dir, d_model):
     """Save activations and token IDs to disk."""
     if not activations_cache:
         return
     
     # Concatenate all batches
     all_acts = torch.cat(activations_cache, dim=0)
-    all_acts = all_acts.reshape(-1, 7168)  # Flatten to [n_tokens, 7168]
+    all_acts = all_acts.reshape(-1, d_model)  # Flatten to [n_tokens, d_model]
     
     all_toks = np.concatenate(token_ids_cache, axis=0)
     all_toks = all_toks.flatten()
