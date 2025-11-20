@@ -15,11 +15,11 @@ Usage:
 """
 
 import argparse
+import os
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
-import os
 from pathlib import Path
 import json
 from datetime import datetime
@@ -44,6 +44,9 @@ try:
         _PILImage.Resampling = _ResamplingProxy  # type: ignore[attr-defined]
 except ImportError:
     pass
+
+# Work around CUDA memory fragmentation on large sharded loads
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 def main():
     parser = argparse.ArgumentParser(description="Collect activations from Kimi-K2-Thinking")
@@ -126,18 +129,30 @@ def main():
     print(f"Shard {args.shard_id}: Loading model {args.model_name}...")
     
     try:
+        # Clear any cached GPU memory before loading
+        torch.cuda.empty_cache()
+        
+        # Calculate available GPUs from CUDA_VISIBLE_DEVICES
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+        num_gpus = len(visible_devices.split(","))
+        
+        # Reserve memory on each GPU for activations
+        max_memory_dict = {i: "70GiB" for i in range(num_gpus)}
+        
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
             device_map="auto",
             torch_dtype=torch.float16,
             trust_remote_code=True,
-            local_files_only=True,  # <-- ADD THIS LINE
+            local_files_only=True,
+            low_cpu_mem_usage=True,
+            max_memory=max_memory_dict,
         )
         
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name,
             trust_remote_code=True,
-            local_files_only=True,  # <-- ADD THIS LINE
+            local_files_only=True,
         )
         
         # Set padding token if not present
@@ -252,16 +267,16 @@ def main():
                     )
                     
                     # Save checkpoint
-                checkpoint = {
-                    "shard_id": args.shard_id,
-                    "tokens_collected": tokens_collected,
-                    "last_chunk_id": chunk_id,
-                    "timestamp": str(datetime.now()),
-                    "errors": errors,
-                    "examples_seen": examples_seen
-                }
-                with open(checkpoint_path, "w") as f:
-                    json.dump(checkpoint, f, indent=2)
+                    checkpoint = {
+                        "shard_id": args.shard_id,
+                        "tokens_collected": tokens_collected,
+                        "last_chunk_id": chunk_id,
+                        "timestamp": str(datetime.now()),
+                        "errors": errors,
+                        "examples_seen": examples_seen
+                    }
+                    with open(checkpoint_path, "w") as f:
+                        json.dump(checkpoint, f, indent=2)
                     
                     print(f"Shard {args.shard_id}: ✓ Saved chunk {chunk_id} (total: {tokens_collected:,} tokens)")
                     
