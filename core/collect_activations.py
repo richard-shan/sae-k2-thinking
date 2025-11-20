@@ -25,6 +25,19 @@ import json
 from datetime import datetime
 import sys
 
+try:
+    from PIL import Image as _PILImage
+
+    if not hasattr(_PILImage, "Resampling"):
+        class _ResamplingProxy:
+            NEAREST = _PILImage.NEAREST
+            BILINEAR = _PILImage.BILINEAR
+            BICUBIC = _PILImage.BICUBIC
+            LANCZOS = getattr(_PILImage, "LANCZOS", getattr(_PILImage, "ANTIALIAS"))
+
+        _PILImage.Resampling = _ResamplingProxy  # type: ignore[attr-defined]
+except ImportError:
+    pass
 
 def main():
     parser = argparse.ArgumentParser(description="Collect activations from Kimi-K2-Thinking")
