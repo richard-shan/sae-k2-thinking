@@ -136,7 +136,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=5_000_000,
+        default=500_000,
         help="Number of tokens per saved chunk.",
     )
     parser.add_argument(
