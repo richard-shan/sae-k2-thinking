@@ -38,8 +38,8 @@ def main():
                        help="Which layer to extract activations from")
     parser.add_argument("--tokens_per_shard", type=int, default=250_000_000,
                        help="Number of tokens to collect per shard")
-    parser.add_argument("--chunk_size", type=int, default=10_000_000,
-                       help="Save activations every N tokens")
+    parser.add_argument("--chunk_size", type=int, default=100_000,
+                       help="Number of tokens per saved chunk (controls memory usage)")
     parser.add_argument("--max_length", type=int, default=2048,
                        help="Maximum sequence length")
     parser.add_argument("--batch_size", type=int, default=1,
@@ -51,6 +51,14 @@ def main():
     parser.add_argument("--dataset_split", type=str, default="train",
                        help="Dataset split to use")
     args = parser.parse_args()
+    
+    # Guard against unrealistic chunk sizes that would exhaust RAM
+    MAX_CHUNK_TOKENS = 1_000_000  # ~14 GB at 7168 dim FP16
+    if args.chunk_size > MAX_CHUNK_TOKENS:
+        est_gb = args.chunk_size * 7168 * 2 / 1e9
+        print(f"ERROR: chunk_size={args.chunk_size:,} tokens would require ~{est_gb:.1f} GB RAM per shard.")
+        print(f"Please lower --chunk_size (recommended <= {MAX_CHUNK_TOKENS:,}).")
+        sys.exit(1)
     
     # Setup directories
     output_path = Path(args.output_dir)
@@ -70,10 +78,14 @@ def main():
             checkpoint = json.load(f)
         start_tokens = checkpoint["tokens_collected"]
         start_chunk = checkpoint["last_chunk_id"] + 1
+        examples_seen = checkpoint.get("examples_seen", 0)
         print(f"  Resuming from checkpoint: {start_tokens:,} tokens, chunk {start_chunk}")
+        if examples_seen:
+            print(f"  Dataset offset (examples seen): {examples_seen:,}")
     else:
         start_tokens = 0
         start_chunk = 0
+        examples_seen = 0
         
         # Save initial metadata
         metadata = {
@@ -148,22 +160,15 @@ def main():
         split=args.dataset_split
     )
     
-    # Shuffle and shard the dataset
+    # Shuffle, shard, and resume from prior offset
     dataset = dataset.shuffle(seed=42, buffer_size=10000)
-    
-    # Skip to this shard's starting point
-    examples_to_skip = args.shard_id
-    if start_tokens > 0:
-        # Also skip already-processed examples from checkpoint
-        examples_to_skip += (start_tokens // args.max_length) * args.num_shards
-    
-    if examples_to_skip > 0:
-        dataset = dataset.skip(examples_to_skip)
+    dataset = dataset.shard(num_shards=args.num_shards, index=args.shard_id)
+    if examples_seen > 0:
+        dataset = dataset.skip(examples_seen)
     
     # Collection loop
     tokens_collected = start_tokens
     chunk_id = start_chunk
-    examples_processed = 0
     errors = 0
     
     print(f"Shard {args.shard_id}: Starting collection...")
@@ -177,12 +182,7 @@ def main():
             if tokens_collected >= args.tokens_per_shard:
                 break
             
-            # Take every num_shards-th example
-            if examples_processed % args.num_shards != 0:
-                examples_processed += 1
-                continue
-            
-            examples_processed += 1
+            examples_seen += 1
             
             # Tokenize
             try:
@@ -226,15 +226,16 @@ def main():
                     )
                     
                     # Save checkpoint
-                    checkpoint = {
-                        "shard_id": args.shard_id,
-                        "tokens_collected": tokens_collected,
-                        "last_chunk_id": chunk_id,
-                        "timestamp": str(datetime.now()),
-                        "errors": errors
-                    }
-                    with open(checkpoint_path, "w") as f:
-                        json.dump(checkpoint, f, indent=2)
+                checkpoint = {
+                    "shard_id": args.shard_id,
+                    "tokens_collected": tokens_collected,
+                    "last_chunk_id": chunk_id,
+                    "timestamp": str(datetime.now()),
+                    "errors": errors,
+                    "examples_seen": examples_seen
+                }
+                with open(checkpoint_path, "w") as f:
+                    json.dump(checkpoint, f, indent=2)
                     
                     print(f"Shard {args.shard_id}: ✓ Saved chunk {chunk_id} (total: {tokens_collected:,} tokens)")
                     
@@ -277,6 +278,7 @@ def main():
             metadata["tokens_collected"] = tokens_collected
             metadata["chunks_saved"] = chunk_id + 1
             metadata["errors_encountered"] = errors
+            metadata["examples_seen"] = examples_seen
             with open(output_path / "metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
         except:
