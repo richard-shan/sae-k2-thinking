@@ -15,11 +15,11 @@ Usage:
 """
 
 import argparse
-import os
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
+import os
 from pathlib import Path
 import json
 from datetime import datetime
@@ -44,9 +44,6 @@ try:
         _PILImage.Resampling = _ResamplingProxy  # type: ignore[attr-defined]
 except ImportError:
     pass
-
-# Work around CUDA memory fragmentation on large sharded loads
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 def main():
     parser = argparse.ArgumentParser(description="Collect activations from Kimi-K2-Thinking")
@@ -134,11 +131,13 @@ def main():
             device_map="auto",
             torch_dtype=torch.float16,
             trust_remote_code=True,
+            local_files_only=True,  # <-- ADD THIS LINE
         )
         
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=True,  # <-- ADD THIS LINE
         )
         
         # Set padding token if not present

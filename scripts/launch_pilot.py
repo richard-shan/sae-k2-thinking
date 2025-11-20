@@ -124,8 +124,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--cuda-devices",
         type=str,
-        default="0,1",
-        help="CUDA device list for the pilot shard (default: 0,1).",
+        default="0,1,2,3,4,5,6,7",
+        help="CUDA device list for the pilot shard (default: 0,1,2,3,4,5,6,7).",
     )
     parser.add_argument(
         "--tokens",
