@@ -31,9 +31,15 @@ try:
     if not hasattr(_PILImage, "Resampling"):
         class _ResamplingProxy:
             NEAREST = _PILImage.NEAREST
+            BOX = getattr(_PILImage, "BOX", _PILImage.NEAREST)
             BILINEAR = _PILImage.BILINEAR
+            HAMMING = getattr(_PILImage, "HAMMING", _PILImage.BILINEAR)
             BICUBIC = _PILImage.BICUBIC
-            LANCZOS = getattr(_PILImage, "LANCZOS", getattr(_PILImage, "ANTIALIAS"))
+            LANCZOS = getattr(
+                _PILImage,
+                "LANCZOS",
+                getattr(_PILImage, "ANTIALIAS", _PILImage.BICUBIC),
+            )
 
         _PILImage.Resampling = _ResamplingProxy  # type: ignore[attr-defined]
 except ImportError:
