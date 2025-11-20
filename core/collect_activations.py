@@ -128,6 +128,9 @@ def main():
     # Load model
     print(f"Shard {args.shard_id}: Loading model {args.model_name}...")
     
+    # Check for pre-compressed model
+    compressed_model_path = Path.home() / ".cache" / "huggingface" / "compressed_models" / "Kimi-K2-Thinking-compressed"
+    
     try:
         # Clear any cached GPU memory before loading
         torch.cuda.empty_cache()
@@ -139,15 +142,43 @@ def main():
         # Reserve memory on each GPU for activations
         max_memory_dict = {i: "70GiB" for i in range(num_gpus)}
         
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            local_files_only=True,
-            low_cpu_mem_usage=True,
-            max_memory=max_memory_dict,
-        )
+        # Try to load compressed model first
+        if compressed_model_path.exists():
+            print(f"Shard {args.shard_id}: Found pre-compressed model, loading from cache...")
+            print(f"  Location: {compressed_model_path}")
+            model = AutoModelForCausalLM.from_pretrained(
+                str(compressed_model_path),
+                device_map="auto",
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                local_files_only=True,
+                low_cpu_mem_usage=True,
+                max_memory=max_memory_dict,
+            )
+            print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully!")
+        else:
+            print(f"Shard {args.shard_id}: No compressed model found.")
+            print(f"Shard {args.shard_id}: Starting compression (this will take ~2 hours)...")
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                local_files_only=True,
+                low_cpu_mem_usage=True,
+                max_memory=max_memory_dict,
+            )
+            
+            # Save compressed model for future runs
+            print(f"Shard {args.shard_id}: Compression complete! Saving compressed model for future runs...")
+            compressed_model_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(
+                str(compressed_model_path),
+                safe_serialization=True,
+                max_shard_size="10GB"
+            )
+            print(f"Shard {args.shard_id}: Compressed model saved to {compressed_model_path}")
+            print(f"Shard {args.shard_id}: Future runs will skip the 2-hour compression!")
         
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name,
