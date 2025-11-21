@@ -206,28 +206,41 @@ def main():
                     print(f"  WARNING: {name} buffer still on meta device")
             
             if meta_params:
-                print(f"Shard {args.shard_id}: Found {len(meta_params)} uninitialized tensors, initializing...")
-                # Initialize them with zeros or proper values
-                for name in meta_params:
-                    try:
-                        # Get the module and parameter name
-                        *module_path, param_name = name.split('.')
-                        module = model
-                        for part in module_path:
-                            module = getattr(module, part)
-                        
-                        # Get the parameter
-                        if hasattr(module, param_name):
-                            param = getattr(module, param_name)
-                            if isinstance(param, torch.nn.Parameter):
-                                # Initialize with zeros on CPU then move
-                                new_param = torch.nn.Parameter(
-                                    torch.zeros_like(param, device='cpu', dtype=torch.float16)
-                                )
-                                setattr(module, param_name, new_param)
-                                print(f"  Initialized {name}")
-                    except Exception as e:
-                        print(f"  Failed to initialize {name}: {e}")
+                            print(f"Shard {args.shard_id}: Found {len(meta_params)} uninitialized tensors")
+                            print(f"Shard {args.shard_id}: Initializing directly on target devices...")
+                            
+                            for name in meta_params:
+                                try:
+                                    # Get the module and parameter name
+                                    *module_path, param_name = name.split('.')
+                                    module = model
+                                    for part in module_path:
+                                        module = getattr(module, part)
+                                    
+                                    # Get the parameter
+                                    if hasattr(module, param_name):
+                                        param = getattr(module, param_name)
+                                        
+                                        # Get target device from device_map
+                                        target_device = device_map.get(name, device_map.get('.'.join(module_path), 'cpu'))
+                                        
+                                        if isinstance(param, torch.nn.Parameter):
+                                            # Initialize directly on target device (no CPU intermediate)
+                                            new_param = torch.nn.Parameter(
+                                                torch.zeros(param.shape, device=target_device, dtype=torch.float16)
+                                            )
+                                            setattr(module, param_name, new_param)
+                                        else:
+                                            # It's a buffer
+                                            new_buffer = torch.zeros(param.shape, device=target_device, dtype=torch.float16)
+                                            module.register_buffer(param_name, new_buffer, persistent=False)
+                                    
+                                    # Print progress every 1000 tensors
+                                    if (meta_params.index(name) + 1) % 1000 == 0:
+                                        print(f"  Progress: {meta_params.index(name) + 1}/{len(meta_params)}")
+                                        
+                                except Exception as e:
+                                    print(f"  Failed to initialize {name}: {e}")
             
             # Now dispatch
             print(f"Shard {args.shard_id}: Dispatching model to devices...")
