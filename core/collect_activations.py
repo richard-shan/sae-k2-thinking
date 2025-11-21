@@ -149,59 +149,19 @@ def main():
         if compressed_index.exists():
             print(f"Shard {args.shard_id}: Found pre-compressed weights!")
             print(f"  Location: {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Loading pre-compressed weights (fast load, no compression)...")
+            print(f"Shard {args.shard_id}: Loading pre-compressed model (fast, no compression)...")
             
-            # Load using accelerate's load_checkpoint_in_model which handles missing keys better
-            from transformers import AutoConfig
-            from transformers.dynamic_module_utils import get_class_from_dynamic_module
-            from accelerate import init_empty_weights, load_checkpoint_in_model, infer_auto_device_map, dispatch_model
-            
-            # Load config
-            config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
-            
-            # Get the model class
-            model_class = get_class_from_dynamic_module(
-                "modeling_deepseek.DeepseekV3ForCausalLM",
-                args.model_name,
-                trust_remote_code=True
-            )
-            
-            # Initialize empty model
-            print(f"Shard {args.shard_id}: Initializing model structure...")
-            with init_empty_weights():
-                model = model_class(config)
-            
-            # Infer device map first
-            print(f"Shard {args.shard_id}: Computing device placement...")
-            device_map = infer_auto_device_map(
-                model,
-                max_memory=max_memory_dict,
-                dtype=torch.float16,
-            )
-            
-            # Load checkpoint with the device map
-            print(f"Shard {args.shard_id}: Loading weights from checkpoint...")
-            offload_folder = Path("/tmp") / "offload"
-            offload_folder.mkdir(exist_ok=True)
-            
-            load_checkpoint_in_model(
-                model,
+            # Use transformers' built-in loading but with our compressed checkpoint
+            model = AutoModelForCausalLM.from_pretrained(
                 str(compressed_model_path),
-                device_map=device_map,
-                offload_folder=str(offload_folder),
-                dtype=torch.float16,
-                offload_buffers=True,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                max_memory=max_memory_dict,
             )
             
-            # Dispatch model with hooks
-            print(f"Shard {args.shard_id}: Dispatching model to devices...")
-            model = dispatch_model(
-                model, 
-                device_map=device_map,
-                offload_dir=str(offload_folder),
-            )
-            
-            print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
+            print(f"Shard {args.shard_id}: Pre-compressed model loaded!")
             
         else:
             print(f"Shard {args.shard_id}: No compressed weights found.")
