@@ -149,45 +149,55 @@ def main():
         if compressed_index.exists():
             print(f"Shard {args.shard_id}: Found pre-compressed weights!")
             print(f"  Location: {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Loading model architecture (fast, no compression)...")
+            print(f"Shard {args.shard_id}: Loading model with pre-compressed weights (skipping 2-hour compression)...")
             
-            # Use HuggingFace's dynamic module system to get the model class
+            # Just load normally but from the compressed path - the weights are already compressed
+            # so loading them won't trigger re-compression
             from transformers import AutoConfig
-            from transformers.dynamic_module_utils import get_class_from_dynamic_module
             
-            # Load config to get model type
+            # Load config
             config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
             
-            # Get the model class through HuggingFace's dynamic loading
-            model_class = get_class_from_dynamic_module(
-                "modeling_deepseek.DeepseekV3ForCausalLM",
-                args.model_name,
-                trust_remote_code=True
+            # Initialize the model on CPU first with actual tensors (not meta device)
+            print(f"Shard {args.shard_id}: Initializing model on CPU...")
+            model = AutoModelForCausalLM.from_config(
+                config,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
             )
             
-            # Initialize empty model with config only (no weights - FAST, no compression)
-            print(f"Shard {args.shard_id}: Initializing empty model structure...")
-            with torch.device("meta"):
-                model = model_class(config)
+            # Now load the pre-compressed state dict
+            print(f"Shard {args.shard_id}: Loading pre-compressed state dict...")
+            from safetensors.torch import load_file
             
-            # Now load the pre-compressed weights directly
-            print(f"Shard {args.shard_id}: Loading pre-compressed weights from disk...")
-            from accelerate import load_checkpoint_and_dispatch
+            with open(compressed_index, "r") as f:
+                index_data = json.load(f)
             
-            # Create offload folder for any overflow
-            offload_folder = Path("/tmp") / "offload"
-            offload_folder.mkdir(exist_ok=True)
+            weight_map = index_data["weight_map"]
+            shard_files = sorted(set(weight_map.values()))
             
-            # Load using accelerate which handles device placement
-            model = load_checkpoint_and_dispatch(
+            # Load all shards into one state dict
+            state_dict = {}
+            for i, shard_file in enumerate(shard_files):
+                shard_path = compressed_model_path / shard_file
+                print(f"Shard {args.shard_id}: Loading {shard_file} ({i+1}/{len(shard_files)})...")
+                shard_weights = load_file(str(shard_path))
+                state_dict.update(shard_weights)
+            
+            # Load state dict into model
+            print(f"Shard {args.shard_id}: Loading weights into model...")
+            model.load_state_dict(state_dict, strict=False)
+            
+            # Now move to GPUs with device_map
+            print(f"Shard {args.shard_id}: Moving model to GPUs...")
+            from accelerate import dispatch_model, infer_auto_device_map
+            
+            device_map = infer_auto_device_map(
                 model,
-                str(compressed_model_path),
-                device_map="auto",
                 max_memory=max_memory_dict,
                 dtype=torch.float16,
-                offload_folder=str(offload_folder),
-                offload_buffers=True,
             )
+            model = dispatch_model(model, device_map=device_map)
             
             print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
             
