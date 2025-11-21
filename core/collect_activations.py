@@ -151,50 +151,38 @@ def main():
             print(f"  Location: {compressed_model_path}")
             print(f"Shard {args.shard_id}: Loading model architecture (fast, no compression)...")
             
-            # Import the custom model class directly
-            original_cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking" / "snapshots"
-            snapshot_dirs = list(original_cache.iterdir())
-            if snapshot_dirs:
-                sys.path.insert(0, str(snapshot_dirs[0]))
+            # Use HuggingFace's dynamic module system to get the model class
+            from transformers import AutoConfig
+            from transformers.dynamic_module_utils import get_class_from_dynamic_module
             
-            from configuration_deepseek import DeepseekV3Config
-            from modeling_deepseek import DeepseekV3ForCausalLM
+            # Load config to get model type
+            config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
             
-            # Load config
-            config = DeepseekV3Config.from_pretrained(args.model_name, trust_remote_code=True)
-            
-            # Initialize empty model (no weights loaded yet - FAST)
-            print(f"Shard {args.shard_id}: Initializing model architecture...")
-            model = DeepseekV3ForCausalLM._from_config(
-                config,
-                torch_dtype=torch.float16,
+            # Get the model class through HuggingFace's dynamic loading
+            model_class = get_class_from_dynamic_module(
+                "modeling_deepseek.DeepseekV3ForCausalLM",
+                args.model_name,
+                trust_remote_code=True
             )
+            
+            # Initialize empty model with config only (no weights - FAST, no compression)
+            print(f"Shard {args.shard_id}: Initializing empty model structure...")
+            with torch.device("meta"):
+                model = model_class(config)
             
             # Now load the pre-compressed weights directly
             print(f"Shard {args.shard_id}: Loading pre-compressed weights from disk...")
             from safetensors.torch import load_file
+            from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch
             
-            with open(compressed_index, "r") as f:
-                index_data = json.load(f)
-            
-            weight_map = index_data["weight_map"]
-            shard_files = set(weight_map.values())
-            
-            for shard_file in sorted(shard_files):
-                shard_path = compressed_model_path / shard_file
-                print(f"Shard {args.shard_id}: Loading {shard_file}...")
-                weights = load_file(str(shard_path))
-                model.load_state_dict(weights, strict=False)
-            
-            # Move to GPUs
-            print(f"Shard {args.shard_id}: Moving model to GPUs...")
-            from accelerate import infer_auto_device_map, dispatch_model
-            device_map = infer_auto_device_map(
+            # Load using accelerate which handles device placement
+            model = load_checkpoint_and_dispatch(
                 model,
+                str(compressed_model_path),
+                device_map="auto",
                 max_memory=max_memory_dict,
                 dtype=torch.float16,
             )
-            model = dispatch_model(model, device_map=device_map)
             
             print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
             
