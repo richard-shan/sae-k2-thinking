@@ -183,7 +183,7 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name,
             trust_remote_code=True,
-            local_files_only=True,
+            use_fast=False,  # Use slow tokenizer to avoid conversion issues
         )
         
         # Set padding token if not present
