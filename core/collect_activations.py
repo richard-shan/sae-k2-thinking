@@ -139,8 +139,8 @@ def main():
         visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
         num_gpus = len(visible_devices.split(","))
         
-        # Reserve memory on each GPU for activations
-        max_memory_dict = {i: "70GiB" for i in range(num_gpus)}
+        # Reserve memory on each GPU for activations - be more aggressive
+        max_memory_dict = {i: "75GiB" for i in range(num_gpus)}
         
         needs_saving = False
         
@@ -172,8 +172,11 @@ def main():
             
             # Now load the pre-compressed weights directly
             print(f"Shard {args.shard_id}: Loading pre-compressed weights from disk...")
-            from safetensors.torch import load_file
-            from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch
+            from accelerate import load_checkpoint_and_dispatch
+            
+            # Create offload folder for any overflow
+            offload_folder = Path("/tmp") / "offload"
+            offload_folder.mkdir(exist_ok=True)
             
             # Load using accelerate which handles device placement
             model = load_checkpoint_and_dispatch(
@@ -182,6 +185,8 @@ def main():
                 device_map="auto",
                 max_memory=max_memory_dict,
                 dtype=torch.float16,
+                offload_folder=str(offload_folder),
+                offload_buffers=True,
             )
             
             print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
