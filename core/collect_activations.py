@@ -24,6 +24,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 import sys
+import shutil
 
 try:
     from PIL import Image as _PILImage
@@ -142,16 +143,38 @@ def main():
         # Reserve memory on each GPU for activations
         max_memory_dict = {i: "70GiB" for i in range(num_gpus)}
         
+        needs_saving = False
+        
         # Try to load compressed model first
         if compressed_model_path.exists():
             print(f"Shard {args.shard_id}: Found pre-compressed model, loading from cache...")
             print(f"  Location: {compressed_model_path}")
+            
+            # Copy custom model code files to compressed directory if not present
+            original_cache_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking"
+            config_file = compressed_model_path / "config.json"
+            modeling_file = compressed_model_path / "modeling_deepseek.py"
+            
+            if not modeling_file.exists():
+                print(f"Shard {args.shard_id}: Copying custom model code files...")
+                # Find the snapshot directory
+                snapshots_dir = original_cache_path / "snapshots"
+                if snapshots_dir.exists():
+                    snapshot_dirs = list(snapshots_dir.iterdir())
+                    if snapshot_dirs:
+                        snapshot_path = snapshot_dirs[0]
+                        # Copy necessary files
+                        for filename in ["modeling_deepseek.py", "configuration_deepseek.py", "tokenization_deepseek.py"]:
+                            src = snapshot_path / filename
+                            if src.exists():
+                                shutil.copy2(src, compressed_model_path / filename)
+                                print(f"Shard {args.shard_id}: Copied {filename}")
+            
             model = AutoModelForCausalLM.from_pretrained(
                 str(compressed_model_path),
                 device_map="auto",
                 torch_dtype=torch.float16,
                 trust_remote_code=True,
-                local_files_only=True,
                 low_cpu_mem_usage=True,
                 max_memory=max_memory_dict,
             )
@@ -164,26 +187,17 @@ def main():
                 device_map="auto",
                 torch_dtype=torch.float16,
                 trust_remote_code=True,
-                local_files_only=True,
                 low_cpu_mem_usage=True,
                 max_memory=max_memory_dict,
             )
-            
-            # Save compressed model for future runs
-            print(f"Shard {args.shard_id}: Compression complete! Saving compressed model for future runs...")
-            compressed_model_path.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(
-                str(compressed_model_path),
-                safe_serialization=True,
-                max_shard_size="10GB"
-            )
-            print(f"Shard {args.shard_id}: Compressed model saved to {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Future runs will skip the 2-hour compression!")
+            needs_saving = True
+            print(f"Shard {args.shard_id}: Compression complete!")
         
+        # Always load tokenizer from original model
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name,
             trust_remote_code=True,
-            use_fast=False,  # Use slow tokenizer to avoid conversion issues
+            use_fast=False,
         )
         
         # Set padding token if not present
@@ -194,6 +208,33 @@ def main():
         print(f"Shard {args.shard_id}: Model loaded successfully")
         print(f"  Model device: {model.device}")
         print(f"  Number of layers: {len(model.model.layers)}")
+        
+        # NOW save after we've confirmed successful loading
+        if needs_saving:
+            print(f"Shard {args.shard_id}: Saving compressed model for future runs...")
+            compressed_model_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(
+                str(compressed_model_path),
+                safe_serialization=True,
+                max_shard_size="10GB"
+            )
+            
+            # Copy custom model code files
+            print(f"Shard {args.shard_id}: Copying custom model code files...")
+            original_cache_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking"
+            snapshots_dir = original_cache_path / "snapshots"
+            if snapshots_dir.exists():
+                snapshot_dirs = list(snapshots_dir.iterdir())
+                if snapshot_dirs:
+                    snapshot_path = snapshot_dirs[0]
+                    for filename in ["modeling_deepseek.py", "configuration_deepseek.py", "tokenization_deepseek.py"]:
+                        src = snapshot_path / filename
+                        if src.exists():
+                            shutil.copy2(src, compressed_model_path / filename)
+                            print(f"Shard {args.shard_id}: Copied {filename}")
+            
+            print(f"Shard {args.shard_id}: ✓ Compressed model saved to {compressed_model_path}")
+            print(f"Shard {args.shard_id}: Future runs will skip the 2-hour compression!")
         
     except Exception as e:
         print(f"Shard {args.shard_id}: ERROR loading model: {e}")
