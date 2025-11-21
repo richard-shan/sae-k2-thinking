@@ -149,46 +149,56 @@ def main():
         if compressed_index.exists():
             print(f"Shard {args.shard_id}: Found pre-compressed weights!")
             print(f"  Location: {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Loading model architecture (fast, no compression)...")
+            print(f"Shard {args.shard_id}: Loading pre-compressed weights (fast load, no compression)...")
             
-            # Use HuggingFace's dynamic module system to get the model class
+            # Load using accelerate's load_checkpoint_in_model which handles missing keys better
             from transformers import AutoConfig
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
+            from accelerate import init_empty_weights, load_checkpoint_in_model, infer_auto_device_map, dispatch_model
             
-            # Load config to get model type
+            # Load config
             config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
             
-            # Get the model class through HuggingFace's dynamic loading
+            # Get the model class
             model_class = get_class_from_dynamic_module(
                 "modeling_deepseek.DeepseekV3ForCausalLM",
                 args.model_name,
                 trust_remote_code=True
             )
             
-            # Initialize empty model with config only (no weights - FAST, no compression)
-            print(f"Shard {args.shard_id}: Initializing empty model structure...")
-            import accelerate
-            with accelerate.init_empty_weights():
+            # Initialize empty model
+            print(f"Shard {args.shard_id}: Initializing model structure...")
+            with init_empty_weights():
                 model = model_class(config)
             
-            # Now load the pre-compressed weights directly
-            print(f"Shard {args.shard_id}: Loading pre-compressed weights from disk...")
-            from accelerate import load_checkpoint_and_dispatch
+            # Infer device map first
+            print(f"Shard {args.shard_id}: Computing device placement...")
+            device_map = infer_auto_device_map(
+                model,
+                max_memory=max_memory_dict,
+                dtype=torch.float16,
+            )
             
-            # Create offload folder for any overflow
+            # Load checkpoint with the device map
+            print(f"Shard {args.shard_id}: Loading weights from checkpoint...")
             offload_folder = Path("/tmp") / "offload"
             offload_folder.mkdir(exist_ok=True)
             
-            # Load using accelerate which handles device placement
-            model = load_checkpoint_and_dispatch(
+            load_checkpoint_in_model(
                 model,
                 str(compressed_model_path),
-                device_map="auto",
-                max_memory=max_memory_dict,
-                dtype=torch.float16,
+                device_map=device_map,
                 offload_folder=str(offload_folder),
+                dtype=torch.float16,
                 offload_buffers=True,
-                skip_keys="inv_freq",  # Skip the problematic buffer
+            )
+            
+            # Dispatch model with hooks
+            print(f"Shard {args.shard_id}: Dispatching model to devices...")
+            model = dispatch_model(
+                model, 
+                device_map=device_map,
+                offload_dir=str(offload_folder),
             )
             
             print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
