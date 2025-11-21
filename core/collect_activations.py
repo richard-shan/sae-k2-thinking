@@ -24,7 +24,6 @@ from pathlib import Path
 import json
 from datetime import datetime
 import sys
-import shutil
 
 try:
     from PIL import Image as _PILImage
@@ -145,43 +144,63 @@ def main():
         
         needs_saving = False
         
-        # Try to load compressed model first
-        if compressed_model_path.exists():
-            print(f"Shard {args.shard_id}: Found pre-compressed model, loading from cache...")
+        # Check if we have pre-compressed weights
+        compressed_index = compressed_model_path / "model.safetensors.index.json"
+        if compressed_index.exists():
+            print(f"Shard {args.shard_id}: Found pre-compressed weights!")
             print(f"  Location: {compressed_model_path}")
+            print(f"Shard {args.shard_id}: Loading model architecture (fast, no compression)...")
             
-            # Copy custom model code files to compressed directory if not present
-            original_cache_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking"
-            config_file = compressed_model_path / "config.json"
-            modeling_file = compressed_model_path / "modeling_deepseek.py"
+            # Import the custom model class directly
+            original_cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking" / "snapshots"
+            snapshot_dirs = list(original_cache.iterdir())
+            if snapshot_dirs:
+                sys.path.insert(0, str(snapshot_dirs[0]))
             
-            if not modeling_file.exists():
-                print(f"Shard {args.shard_id}: Copying custom model code files...")
-                # Find the snapshot directory
-                snapshots_dir = original_cache_path / "snapshots"
-                if snapshots_dir.exists():
-                    snapshot_dirs = list(snapshots_dir.iterdir())
-                    if snapshot_dirs:
-                        snapshot_path = snapshot_dirs[0]
-                        # Copy necessary files
-                        for filename in ["modeling_deepseek.py", "configuration_deepseek.py", "tokenization_deepseek.py"]:
-                            src = snapshot_path / filename
-                            if src.exists():
-                                shutil.copy2(src, compressed_model_path / filename)
-                                print(f"Shard {args.shard_id}: Copied {filename}")
+            from configuration_deepseek import DeepseekV3Config
+            from modeling_deepseek import DeepseekV3ForCausalLM
             
-            model = AutoModelForCausalLM.from_pretrained(
-                str(compressed_model_path),
-                device_map="auto",
+            # Load config
+            config = DeepseekV3Config.from_pretrained(args.model_name, trust_remote_code=True)
+            
+            # Initialize empty model (no weights loaded yet - FAST)
+            print(f"Shard {args.shard_id}: Initializing model architecture...")
+            model = DeepseekV3ForCausalLM._from_config(
+                config,
                 torch_dtype=torch.float16,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-                max_memory=max_memory_dict,
             )
-            print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully!")
+            
+            # Now load the pre-compressed weights directly
+            print(f"Shard {args.shard_id}: Loading pre-compressed weights from disk...")
+            from safetensors.torch import load_file
+            
+            with open(compressed_index, "r") as f:
+                index_data = json.load(f)
+            
+            weight_map = index_data["weight_map"]
+            shard_files = set(weight_map.values())
+            
+            for shard_file in sorted(shard_files):
+                shard_path = compressed_model_path / shard_file
+                print(f"Shard {args.shard_id}: Loading {shard_file}...")
+                weights = load_file(str(shard_path))
+                model.load_state_dict(weights, strict=False)
+            
+            # Move to GPUs
+            print(f"Shard {args.shard_id}: Moving model to GPUs...")
+            from accelerate import infer_auto_device_map, dispatch_model
+            device_map = infer_auto_device_map(
+                model,
+                max_memory=max_memory_dict,
+                dtype=torch.float16,
+            )
+            model = dispatch_model(model, device_map=device_map)
+            
+            print(f"Shard {args.shard_id}: Pre-compressed model loaded successfully (NO COMPRESSION)!")
+            
         else:
-            print(f"Shard {args.shard_id}: No compressed model found.")
-            print(f"Shard {args.shard_id}: Starting compression (this will take ~2 hours)...")
+            print(f"Shard {args.shard_id}: No compressed weights found.")
+            print(f"Shard {args.shard_id}: Loading and compressing model (this will take ~2 hours)...")
             model = AutoModelForCausalLM.from_pretrained(
                 args.model_name,
                 device_map="auto",
@@ -209,32 +228,17 @@ def main():
         print(f"  Model device: {model.device}")
         print(f"  Number of layers: {len(model.model.layers)}")
         
-        # NOW save after we've confirmed successful loading
+        # Save compressed weights if needed
         if needs_saving:
-            print(f"Shard {args.shard_id}: Saving compressed model for future runs...")
+            print(f"Shard {args.shard_id}: Saving compressed weights for future runs...")
             compressed_model_path.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(
                 str(compressed_model_path),
                 safe_serialization=True,
                 max_shard_size="10GB"
             )
-            
-            # Copy custom model code files
-            print(f"Shard {args.shard_id}: Copying custom model code files...")
-            original_cache_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2-Thinking"
-            snapshots_dir = original_cache_path / "snapshots"
-            if snapshots_dir.exists():
-                snapshot_dirs = list(snapshots_dir.iterdir())
-                if snapshot_dirs:
-                    snapshot_path = snapshot_dirs[0]
-                    for filename in ["modeling_deepseek.py", "configuration_deepseek.py", "tokenization_deepseek.py"]:
-                        src = snapshot_path / filename
-                        if src.exists():
-                            shutil.copy2(src, compressed_model_path / filename)
-                            print(f"Shard {args.shard_id}: Copied {filename}")
-            
-            print(f"Shard {args.shard_id}: ✓ Compressed model saved to {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Future runs will skip the 2-hour compression!")
+            print(f"Shard {args.shard_id}: ✓ Compressed weights saved!")
+            print(f"Shard {args.shard_id}: Future runs will load in ~5 minutes!")
         
     except Exception as e:
         print(f"Shard {args.shard_id}: ERROR loading model: {e}")
