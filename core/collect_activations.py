@@ -149,19 +149,95 @@ def main():
         if compressed_index.exists():
             print(f"Shard {args.shard_id}: Found pre-compressed weights!")
             print(f"  Location: {compressed_model_path}")
-            print(f"Shard {args.shard_id}: Loading pre-compressed model (fast, no compression)...")
+            print(f"Shard {args.shard_id}: Loading model architecture (fast, no compression)...")
             
-            # Use transformers' built-in loading but with our compressed checkpoint
-            model = AutoModelForCausalLM.from_pretrained(
-                str(compressed_model_path),
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-                max_memory=max_memory_dict,
+            from transformers import AutoConfig
+            from transformers.dynamic_module_utils import get_class_from_dynamic_module
+            from accelerate import init_empty_weights, load_checkpoint_in_model, infer_auto_device_map, dispatch_model
+            
+            # Load config
+            config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
+            
+            # Get the model class
+            model_class = get_class_from_dynamic_module(
+                "modeling_deepseek.DeepseekV3ForCausalLM",
+                args.model_name,
+                trust_remote_code=True
             )
             
-            print(f"Shard {args.shard_id}: Pre-compressed model loaded!")
+            # Initialize empty model
+            print(f"Shard {args.shard_id}: Initializing empty model structure...")
+            with init_empty_weights():
+                model = model_class(config)
+            
+            # Infer device map
+            print(f"Shard {args.shard_id}: Computing device placement...")
+            device_map = infer_auto_device_map(
+                model,
+                max_memory=max_memory_dict,
+                dtype=torch.float16,
+            )
+            
+            # Load checkpoint
+            print(f"Shard {args.shard_id}: Loading weights from checkpoint...")
+            offload_folder = Path("/tmp") / "offload"
+            offload_folder.mkdir(exist_ok=True)
+            
+            load_checkpoint_in_model(
+                model,
+                str(compressed_model_path),
+                device_map=device_map,
+                offload_folder=str(offload_folder),
+                dtype=torch.float16,
+                offload_buffers=True,
+            )
+            
+            # Check for meta tensors before dispatch
+            print(f"Shard {args.shard_id}: Checking for uninitialized tensors...")
+            meta_params = []
+            for name, param in model.named_parameters():
+                if param.device == torch.device("meta"):
+                    meta_params.append(name)
+                    print(f"  WARNING: {name} still on meta device")
+            
+            for name, buffer in model.named_buffers():
+                if buffer.device == torch.device("meta"):
+                    meta_params.append(name)
+                    print(f"  WARNING: {name} buffer still on meta device")
+            
+            if meta_params:
+                print(f"Shard {args.shard_id}: Found {len(meta_params)} uninitialized tensors, initializing...")
+                # Initialize them with zeros or proper values
+                for name in meta_params:
+                    try:
+                        # Get the module and parameter name
+                        *module_path, param_name = name.split('.')
+                        module = model
+                        for part in module_path:
+                            module = getattr(module, part)
+                        
+                        # Get the parameter
+                        if hasattr(module, param_name):
+                            param = getattr(module, param_name)
+                            if isinstance(param, torch.nn.Parameter):
+                                # Initialize with zeros on CPU then move
+                                new_param = torch.nn.Parameter(
+                                    torch.zeros_like(param, device='cpu', dtype=torch.float16)
+                                )
+                                setattr(module, param_name, new_param)
+                                print(f"  Initialized {name}")
+                    except Exception as e:
+                        print(f"  Failed to initialize {name}: {e}")
+            
+            # Now dispatch
+            print(f"Shard {args.shard_id}: Dispatching model to devices...")
+            model = dispatch_model(
+                model,
+                device_map=device_map,
+                offload_dir=str(offload_folder),
+            )
+            
+            print(f"Shard {args.shard_id}: Model loaded successfully!")
             
         else:
             print(f"Shard {args.shard_id}: No compressed weights found.")
