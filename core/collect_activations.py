@@ -192,55 +192,55 @@ def main():
                 offload_buffers=True,
             )
             
-            # Check for meta tensors before dispatch
-            print(f"Shard {args.shard_id}: Checking for uninitialized tensors...")
-            meta_params = []
+            # Check and initialize meta tensors on-the-fly (memory efficient)
+            print(f"Shard {args.shard_id}: Initializing any missing weights directly on devices...")
+            
+            initialized_count = 0
             for name, param in model.named_parameters():
                 if param.device == torch.device("meta"):
-                    meta_params.append(name)
-                    print(f"  WARNING: {name} still on meta device")
+                    try:
+                        # Get the module and parameter name
+                        *module_path, param_name = name.split('.')
+                        module = model
+                        for part in module_path:
+                            module = getattr(module, part)
+                        
+                        # Get target device from device_map
+                        target_device = device_map.get(name, device_map.get('.'.join(module_path), 'cpu'))
+                        
+                        # Initialize directly on target device
+                        new_param = torch.nn.Parameter(
+                            torch.zeros(param.shape, device=target_device, dtype=torch.float16)
+                        )
+                        setattr(module, param_name, new_param)
+                        
+                        initialized_count += 1
+                        if initialized_count % 1000 == 0:
+                            print(f"  Initialized {initialized_count} parameters...")
+                        
+                    except Exception as e:
+                        if initialized_count < 10:
+                            print(f"  Failed to initialize {name}: {e}")
             
+            # Same for buffers
             for name, buffer in model.named_buffers():
                 if buffer.device == torch.device("meta"):
-                    meta_params.append(name)
-                    print(f"  WARNING: {name} buffer still on meta device")
+                    try:
+                        *module_path, buffer_name = name.split('.')
+                        module = model
+                        for part in module_path:
+                            module = getattr(module, part)
+                        
+                        target_device = device_map.get(name, device_map.get('.'.join(module_path), 'cpu'))
+                        new_buffer = torch.zeros(buffer.shape, device=target_device, dtype=torch.float16)
+                        module.register_buffer(buffer_name, new_buffer, persistent=False)
+                        
+                        initialized_count += 1
+                        
+                    except Exception as e:
+                        pass
             
-            if meta_params:
-                            print(f"Shard {args.shard_id}: Found {len(meta_params)} uninitialized tensors")
-                            print(f"Shard {args.shard_id}: Initializing directly on target devices...")
-                            
-                            for name in meta_params:
-                                try:
-                                    # Get the module and parameter name
-                                    *module_path, param_name = name.split('.')
-                                    module = model
-                                    for part in module_path:
-                                        module = getattr(module, part)
-                                    
-                                    # Get the parameter
-                                    if hasattr(module, param_name):
-                                        param = getattr(module, param_name)
-                                        
-                                        # Get target device from device_map
-                                        target_device = device_map.get(name, device_map.get('.'.join(module_path), 'cpu'))
-                                        
-                                        if isinstance(param, torch.nn.Parameter):
-                                            # Initialize directly on target device (no CPU intermediate)
-                                            new_param = torch.nn.Parameter(
-                                                torch.zeros(param.shape, device=target_device, dtype=torch.float16)
-                                            )
-                                            setattr(module, param_name, new_param)
-                                        else:
-                                            # It's a buffer
-                                            new_buffer = torch.zeros(param.shape, device=target_device, dtype=torch.float16)
-                                            module.register_buffer(param_name, new_buffer, persistent=False)
-                                    
-                                    # Print progress every 1000 tensors
-                                    if (meta_params.index(name) + 1) % 1000 == 0:
-                                        print(f"  Progress: {meta_params.index(name) + 1}/{len(meta_params)}")
-                                        
-                                except Exception as e:
-                                    print(f"  Failed to initialize {name}: {e}")
+            print(f"Shard {args.shard_id}: Initialized {initialized_count} missing tensors")
             
             # Now dispatch
             print(f"Shard {args.shard_id}: Dispatching model to devices...")
